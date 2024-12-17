@@ -16,8 +16,10 @@ from torchdr.utils import (
     batch_transpose,
     logsumexp_red,
     sum_red,
+    symmetric_pairwise_distances,
+    LazyTensorType,
 )
-
+from torchdr.utils.utils import identity_matrix
 
 @wrap_vectors
 def _log_SelfTuning(C, sigma):
@@ -60,6 +62,29 @@ def _log_MAGIC(C, sigma):
     log_P : torch.Tensor or pykeops.torch.LazyTensor
     """
     return -C / sigma
+
+
+@wrap_vectors
+def _log_AlphaDecay(C, sigma, alpha):
+    r"""Return the alpha-decay affinity matrix with sample-wise bandwidth.
+    
+    The bandwidth is determined by the distance from a point
+    to its K-th neirest neighbor in log domain.
+
+    Parameters
+    ----------
+    C : torch.Tensor or pykeops.torch.LazyTensor of shape (n, n)
+        Pairwise distance matrix.
+    sigma : torch.Tensor of shape (n,)
+        Sample-wise bandwidth parameter.
+    alpha : float, optional
+        Exponent for the alpha-decay kernel.
+    
+    Returns
+    -------
+    log_P : torch.Tensor or pykeops.torch.LazyTensor
+    """
+    return - (C / sigma).pow(alpha)
 
 
 class SelfTuningAffinity(LogAffinity):
@@ -235,3 +260,120 @@ class MAGICAffinity(Affinity):
         affinity_matrix = affinity_matrix / self.normalization_
 
         return affinity_matrix
+
+class AlphaDecayAffinity(Affinity):
+    r"""Compute the alpha-decay affinity.
+
+    The affinity has a sample-wise bandwidth :math:`\mathbf{\sigma} \in \mathbb{R}^n`.
+
+    .. math::
+        P_{ij} \leftarrow \exp \left( - \left( \frac{C_{ij}}{\sigma_i} \right)^\alpha \right)
+
+    In the above, :math:`\mathbf{C}` is the pairwise distance matrix and
+    :math:`\sigma_i` is the distance from the K’th nearest neighbor of data point
+    :math:`\mathbf{x}_i`.
+
+    Parameters
+    ----------
+    K : int, optional
+        K-th neirest neighbor .
+    alpha : float, optional
+        Exponent for the alpha-decay kernel.
+    metric : str, optional
+        Metric to use for pairwise distances computation.
+    zero_diag : bool, optional
+        Whether to set the diagonal of the affinity matrix to zero.
+    device : str, optional
+        Device to use for computations.
+    keops : bool, optional
+        Whether to use KeOps for computations.
+    verbose : bool, optional
+        Verbosity. Default is False.
+    """
+    def __init__(
+        self,
+        K: int = 7,
+        alpha: float = 2.0,
+        metric: str = "sqeuclidean",
+        zero_diag: bool = True,
+        device: str = None,
+        keops: bool = True,
+        verbose: bool = False,
+    ):
+        super().__init__(
+            metric=metric,
+            zero_diag=zero_diag,
+            device=device,
+            keops=keops,
+            verbose=verbose,
+        )
+        self.K = K
+        self.alpha = alpha
+    
+    def _compute_affinity(self, X: torch.Tensor):
+        C = self._distance_matrix(X)
+        minK_values, minK_indices = kmin(C, k=self.K, dim=1)
+        self.sigma_ = minK_values[:, -1]
+        affinity_matrix = _log_AlphaDecay(C, self.sigma_, self.alpha).exp()
+        affinity_matrix = (affinity_matrix + batch_transpose(affinity_matrix)) / 2
+
+        self.normalization_ = sum_red(affinity_matrix, 1)
+        affinity_matrix = affinity_matrix / self.normalization_
+
+        return affinity_matrix
+
+class NegPotentialAffinity(Affinity):
+    # FIXME: (GH) use \alpha-decay kernel
+    def __init__(
+        self,
+        metric: str = "sqeuclidean",
+        device: str = None,
+        keops: bool = True,
+        verbose: bool = False,
+        sigma: float = 2.0,
+    ):
+        super().__init__(
+            metric=metric,
+            device=device,
+            keops=keops,
+            verbose=verbose,
+            zero_diag=False,
+        )
+        self.sigma = sigma
+
+    @staticmethod
+    def potential_dist(affinity: LazyTensorType, eps: float = 1e-5, keops:bool = False) -> LazyTensorType:
+        r"""Compute the potential distance matrix from the affinity matrix.
+
+        Parameters
+        ----------
+        affinity : torch.Tensor or pykeops.torch.LazyTensor of shape (n, n)
+            Affinity matrix.
+        eps : float, optional
+            Small value to avoid numerical issues.
+        keops : bool, optional
+            Whether to use KeOps for computations
+
+        Returns
+        -------
+        potential_dist : torch.Tensor or pykeops.torch.LazyTensor
+        """
+        log_affinity = -(affinity + eps).log()
+        potential_dist = symmetric_pairwise_distances(log_affinity, metric="euclidean", keops=keops)
+        return potential_dist
+    
+    def _compute_affinity(self, X: torch.Tensor):
+        C = self._distance_matrix(X)
+        affinity = (C/self.sigma).exp()
+        deg = sum_red(affinity, 1)
+        inv_deg = deg.pow(-1)
+        diffusion = affinity * inv_deg       
+        dist = self.potential_dist(diffusion)
+        # symetrize
+        # FIXME (GH): try to avoid this.
+        # also need to zero the diagonal
+        dist = (dist + batch_transpose(dist)) / 2
+        # zero the diagonal
+        identity = identity_matrix(dist.shape[-1], self.keops, X.device, X.dtype)
+        dist = dist - identity * dist.diag()
+        return -1.0 * dist
