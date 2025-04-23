@@ -1,23 +1,22 @@
-# -*- coding: utf-8 -*-
 """SNEkhorn algorithm (inverse OT DR)."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
 #
 # License: BSD 3-Clause License
 
-from torchdr.neighbor_embedding.base import NeighborEmbedding
 from torchdr.affinity import (
-    SymmetricEntropicAffinity,
     EntropicAffinity,
     SinkhornAffinity,
+    SymmetricEntropicAffinity,
 )
-from torchdr.utils import logsumexp_red, cross_entropy_loss
+from torchdr.neighbor_embedding.base import NeighborEmbedding
+from torchdr.utils import cross_entropy_loss, logsumexp_red
 
 
 class TSNEkhorn(NeighborEmbedding):
     r"""TSNEkhorn algorithm introduced in :cite:`van2024snekhorn`.
 
-    It involves selecting a :class:`~torchdr.SymmetricEntropicAffinity` as input
+    It uses a :class:`~torchdr.SymmetricEntropicAffinity` as input
     affinity :math:`\mathbf{P}` and a :class:`~torchdr.SinkhornAffinity` as output
     affinity :math:`\mathbf{Q}`.
 
@@ -59,25 +58,22 @@ class TSNEkhorn(NeighborEmbedding):
         Initialization for the embedding Z, default 'pca'.
     init_scaling : float, optional
         Scaling factor for the initialization, by default 1e-4.
-    tol : float, optional
+    min_grad_norm : float, optional
         Precision threshold at which the algorithm stops, by default 1e-4.
     max_iter : int, optional
         Number of maximum iterations for the descent algorithm, by default 2000.
-    tolog : bool, optional
-        Whether to store intermediate results in a dictionary, by default False.
     device : str, optional
         Device to use, by default "auto".
-    keops : bool, optional
-        Whether to use KeOps, by default False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity, by default False.
     random_state : float, optional
-        Random seed for reproducibility, by default 0.
-    early_exaggeration : float, optional
+        Random seed for reproducibility, by default None.
+    early_exaggeration_coeff : float, optional
         Coefficient for the attraction term during the early exaggeration phase.
         By default 10.0 for early exaggeration.
-    coeff_repulsion : float, optional
-        Coefficient for the repulsion term, by default 1.0.
     early_exaggeration_iter : int, optional
         Number of iterations for early exaggeration, by default 250.
     lr_affinity_in : float, optional
@@ -113,15 +109,13 @@ class TSNEkhorn(NeighborEmbedding):
         scheduler_kwargs: dict = None,
         init: str = "pca",
         init_scaling: float = 1e-4,
-        tol: float = 1e-4,
+        min_grad_norm: float = 1e-4,
         max_iter: int = 2000,
-        tolog: bool = False,
         device: str = None,
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        random_state: float = 0,
-        early_exaggeration: float = 10.0,
-        coeff_repulsion: float = 1.0,
+        random_state: float = None,
+        early_exaggeration_coeff: float = 10.0,
         early_exaggeration_iter: int = 250,
         lr_affinity_in: float = 1e-1,
         eps_square_affinity_in: bool = True,
@@ -151,7 +145,7 @@ class TSNEkhorn(NeighborEmbedding):
                 tol=tol_affinity_in,
                 max_iter=max_iter_affinity_in,
                 device=device,
-                keops=keops,
+                backend=backend,
                 verbose=verbose,
                 zero_diag=False,
             )
@@ -162,13 +156,13 @@ class TSNEkhorn(NeighborEmbedding):
                 tol=tol_affinity_in,
                 max_iter=max_iter_affinity_in,
                 device=device,
-                keops=keops,
+                backend=backend,
                 verbose=verbose,
             )
         affinity_out = SinkhornAffinity(
             metric=metric_out,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=False,
             base_kernel="student",
             with_grad=unrolling,
@@ -181,20 +175,18 @@ class TSNEkhorn(NeighborEmbedding):
             n_components=n_components,
             optimizer=optimizer,
             optimizer_kwargs=optimizer_kwargs,
-            tol=tol,
+            min_grad_norm=min_grad_norm,
             max_iter=max_iter,
             lr=lr,
             scheduler=scheduler,
             scheduler_kwargs=scheduler_kwargs,
             init=init,
             init_scaling=init_scaling,
-            tolog=tolog,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             random_state=random_state,
-            early_exaggeration=early_exaggeration,
-            coeff_repulsion=coeff_repulsion,
+            early_exaggeration_coeff=early_exaggeration_coeff,
             early_exaggeration_iter=early_exaggeration_iter,
         )
 
@@ -214,8 +206,5 @@ class TSNEkhorn(NeighborEmbedding):
         else:
             repulsive_term = logsumexp_red(log_Q, dim=(0, 1)).exp()
 
-        loss = (
-            self.early_exaggeration_ * attractive_term
-            + self.coeff_repulsion * repulsive_term
-        )
+        loss = self.early_exaggeration_coeff_ * attractive_term + repulsive_term
         return loss

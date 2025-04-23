@@ -137,6 +137,7 @@ docs/source/sg_execution_times.rst
 # Misc
 .DS_Store
 .vscode
+dev
 
 # Data
 data/
@@ -147,3 +148,17 @@ data/
 *.pkl
 *.hdf5
 *.tar.gz
+*.pt
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.webp
+*.svg
+*.eps
+*.pdf

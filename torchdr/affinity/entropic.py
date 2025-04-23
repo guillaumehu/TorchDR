@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Affinity matrices with entropic constraints."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
@@ -7,27 +6,28 @@
 #
 # License: BSD 3-Clause License
 
-import torch
-import numpy as np
-from tqdm import tqdm
-import warnings
 import contextlib
 import math
+import warnings
 from typing import Tuple
 
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from torchdr.affinity.base import LogAffinity, SparseLogAffinity
 from torchdr.utils import (
+    OPTIMIZERS,
+    batch_transpose,
+    check_NaNs,
     entropy,
     false_position,
-    wrap_vectors,
-    sum_matrix_vector,
-    kmin,
     kmax,
-    check_NaNs,
+    kmin,
     logsumexp_red,
-    batch_transpose,
-    OPTIMIZERS,
+    sum_matrix_vector,
+    wrap_vectors,
 )
-from torchdr.affinity.base import LogAffinity, SparseLogAffinity
 
 
 @wrap_vectors
@@ -165,13 +165,13 @@ def _check_perplexity(perplexity, n, verbose=True):
         )
 
     if perplexity >= n or perplexity <= 1:
-        new_value = n // 2
+        new_value = 50
         if verbose:
             warnings.warn(
                 "[TorchDR] WARNING Affinity: The perplexity parameter must be "
                 "greater than 1 and smaller than the number of samples "
                 f"(here n = {n}). Got perplexity = {perplexity}. "
-                "Setting perplexity to {new_value}."
+                "Setting perplexity to {50}."
             )
         return new_value
     else:
@@ -230,17 +230,19 @@ class EntropicAffinity(SparseLogAffinity):
         Precision threshold at which the root finding algorithm stops.
     max_iter : int, optional
         Number of maximum iterations for the root finding algorithm.
-    sparsity: bool or 'auto', optional
+    sparsity: bool, optional
         If True, keeps only the 3 * perplexity smallest element on each row of
         the ground cost matrix. Recommended if perplexity is not too big.
+        Default is True.
     metric : str, optional
         Metric to use for computing distances (default "sqeuclidean").
     zero_diag : bool, optional
         Whether to set the diagonal of the distance matrix to 0.
     device : str, optional
         Device to use for computation.
-    keops : bool, optional
-        Whether to use KeOps for computation.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity. Default is False.
     """  # noqa: E501
@@ -250,11 +252,11 @@ class EntropicAffinity(SparseLogAffinity):
         perplexity: float = 30,
         tol: float = 1e-3,
         max_iter: int = 1000,
-        sparsity: bool | str = "auto",
+        sparsity: bool = "True",
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         self.perplexity = perplexity
@@ -265,22 +267,10 @@ class EntropicAffinity(SparseLogAffinity):
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             sparsity=sparsity,
         )
-
-    def _sparsity_rule(self):
-        if self.perplexity < 100:
-            return True
-        else:
-            if self.verbose:
-                warnings.warn(
-                    "[TorchDR] WARNING Affinity: perplexity is large "
-                    f"({self.perplexity}) thus we turn off sparsity for "
-                    "the EntropicAffinity. "
-                )
-            return False
 
     def _compute_sparse_log_affinity(self, X: torch.Tensor):
         r"""Solve the entropic affinity problem by :cite:`hinton2002stochastic`.
@@ -301,30 +291,23 @@ class EntropicAffinity(SparseLogAffinity):
         if self.verbose:
             print("[TorchDR] Affinity : computing the Entropic Affinity matrix.")
 
-        C = self._distance_matrix(X)
-
-        n_samples_in = C.shape[0]
+        n_samples_in = X.shape[0]
         perplexity = _check_perplexity(self.perplexity, n_samples_in, self.verbose)
         target_entropy = np.log(perplexity) + 1
 
         k = 3 * perplexity
-        if self._sparsity:
-            if k >= n_samples_in - 1:
+        if self.sparsity:
+            if self.verbose:
                 print(
-                    "[TorchDR] WARNING Affinity: sparsity mode disabled "
-                    f"because perplexity is too large. 3 x perplexity = {k} "
-                    ">= n_samples - 1."
+                    f"[TorchDR] Affinity : sparsity mode enabled, computing {k} "
+                    "nearest neighbors. If this step is too slow, consider "
+                    "reducing the dimensionality of the data or disabling sparsity."
                 )
-                C_, indices = C, None
-            else:
-                if self.verbose:
-                    print(
-                        f"[TorchDR] Affinity : sparsity mode enabled, computing {k} "
-                        "nearest neighbors."
-                    )
-                C_, indices = kmin(C, k=k, dim=1)
+            # when using sparsity, we construct a reduced distance matrix
+            # of shape (n_samples, k)
+            C_, indices = self._distance_matrix(X, k=k)
         else:
-            C_, indices = C, None
+            C_, indices = self._distance_matrix(X)
 
         def entropy_gap(eps):  # function to find the root of
             log_P = _log_Pe(C_, eps)
@@ -359,7 +342,7 @@ class SymmetricEntropicAffinity(LogAffinity):
     r"""Compute the symmetric entropic affinity (SEA) introduced in :cite:`van2024snekhorn`.
 
     Compute the solution :math:`\mathbf{P}^{\mathrm{se}}` to the symmetric entropic
-    affinity (SEA) problem described in :cite:`van2024snekhorn`.
+    affinity (SEA) problem.
 
     The algorithm computes the optimal dual variables
     :math:`\mathbf{\mu}^\star \in \mathbb{R}^n` and
@@ -412,16 +395,15 @@ class SymmetricEntropicAffinity(LogAffinity):
         Number of maximum iterations for the algorithm, by default 500.
     optimizer : {'SGD', 'Adam', 'NAdam', 'LBFGS}, optional
         Which pytorch optimizer to use (default 'Adam').
-    tolog : bool, optional
-        Whether to store intermediate result in a dictionary (default False).
     metric : str, optional
         Metric to use for computing distances, by default "sqeuclidean".
     zero_diag : bool, optional
         Whether to set the diagonal of the distance matrix to 0.
     device : str, optional
         Device to use for computation.
-    keops : bool, optional
-        Whether to use KeOps for computation.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity. Default is False.
     """  # noqa: E501
@@ -434,18 +416,17 @@ class SymmetricEntropicAffinity(LogAffinity):
         tol: float = 1e-3,
         max_iter: int = 500,
         optimizer: str = "Adam",
-        tolog: bool = False,
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.perplexity = perplexity
@@ -453,7 +434,6 @@ class SymmetricEntropicAffinity(LogAffinity):
         self.tol = tol
         self.max_iter = max_iter
         self.optimizer = optimizer
-        self.tolog = tolog
         self.eps_square = eps_square
 
     def _compute_log_affinity(self, X: torch.Tensor):
@@ -476,7 +456,7 @@ class SymmetricEntropicAffinity(LogAffinity):
                 "[TorchDR] Affinity : computing the Symmetric Entropic Affinity matrix."
             )
 
-        C = self._distance_matrix(X)
+        C, _ = self._distance_matrix(X)
 
         n_samples_in = X.shape[0]
         perplexity = _check_perplexity(self.perplexity, n_samples_in, self.verbose)
@@ -525,20 +505,12 @@ class SymmetricEntropicAffinity(LogAffinity):
                 ),
             )
 
-            if self.tolog:
-                self.log_["eps"] = [self.eps_.clone().detach().cpu()]
-                self.log_["mu"] = [self.eps_.clone().detach().cpu()]
-
             log_affinity_matrix = _log_Pse(
                 C, self.eps_, self.mu_, eps_square=self.eps_square
             )
 
         else:  # other optimizers including SGD and Adam
             optimizer = OPTIMIZERS[self.optimizer]([self.eps_, self.mu_], lr=self.lr)
-
-            if self.tolog:
-                self.log_["eps"] = [self.eps_.clone().detach().cpu()]
-                self.log_["mu"] = [self.eps_.clone().detach().cpu()]
 
             pbar = tqdm(range(self.max_iter), disable=not self.verbose)
             for k in pbar:
@@ -570,10 +542,6 @@ class SymmetricEntropicAffinity(LogAffinity):
                         ),
                     )
 
-                    if self.tolog:
-                        self.log_["eps"].append(self.eps_.clone().detach())
-                        self.log_["mu"].append(self.mu_.clone().detach())
-
                     perps = (H - 1).exp()
                     if self.verbose:
                         pbar.set_description(
@@ -589,8 +557,7 @@ class SymmetricEntropicAffinity(LogAffinity):
                     ):
                         if self.verbose:
                             print(
-                                "[TorchDR] Affinity : convergence reached "
-                                f"at iter {k}."
+                                f"[TorchDR] Affinity : convergence reached at iter {k}."
                             )
                         break
 
@@ -660,16 +627,15 @@ class SinkhornAffinity(LogAffinity):
         Number of maximum iterations for the algorithm.
     base_kernel : {"gaussian", "student"}, optional
         Which base kernel to normalize as doubly stochastic.
-    tolog : bool, optional
-        Whether to store intermediate result in a dictionary.
     metric : str, optional
         Metric to use for computing distances (default "sqeuclidean").
     zero_diag : bool, optional
         Whether to set the diagonal of the distance matrix to 0.
     device : str, optional
         Device to use for computation.
-    keops : bool, optional
-        Whether to use KeOps for computation.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity. Default is False.
     with_grad : bool, optional (default=False)
@@ -683,11 +649,10 @@ class SinkhornAffinity(LogAffinity):
         tol: float = 1e-5,
         max_iter: int = 1000,
         base_kernel: str = "gaussian",
-        tolog: bool = False,
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
         with_grad: bool = False,
     ):
@@ -695,14 +660,13 @@ class SinkhornAffinity(LogAffinity):
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.eps = eps
         self.tol = tol
         self.max_iter = max_iter
         self.base_kernel = base_kernel
-        self.tolog = tolog
         self.with_grad = with_grad
 
     def _compute_log_affinity(self, X: torch.Tensor, init_dual: torch.Tensor = None):
@@ -721,7 +685,7 @@ class SinkhornAffinity(LogAffinity):
             of shape (n_samples, n_samples)
             Log of the doubly stochastic affinity matrix.
         """
-        C = self._distance_matrix(X)
+        C, _ = self._distance_matrix(X)
         if self.base_kernel == "student":
             C = (1 + C).log()
 
@@ -741,9 +705,6 @@ class SinkhornAffinity(LogAffinity):
             else init_dual
         )
 
-        if self.tolog:
-            self.log["dual"] = [self.dual_.clone().detach().cpu()]
-
         context_manager = (
             contextlib.nullcontext() if self.with_grad else torch.no_grad()
         )
@@ -753,9 +714,6 @@ class SinkhornAffinity(LogAffinity):
                 # well conditioned symmetric Sinkhorn iteration (Feydy et al. 2019)
                 reduction = -sum_matrix_vector(log_K, self.dual_).logsumexp(0).squeeze()
                 self.dual_ = 0.5 * (self.dual_ + reduction)
-
-                if self.tolog:
-                    self.log["dual"].append(self.dual_.clone().detach().cpu())
 
                 check_NaNs(
                     self.dual_, msg=f"[TorchDR] ERROR Affinity: NaN at iter {k}."
@@ -798,8 +756,9 @@ class NormalizedGaussianAffinity(LogAffinity):
         Whether to set the diagonal of the affinity matrix to zero.
     device : str, optional
         Device to use for computations.
-    keops : bool, optional
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity.
     normalization_dim : int or Tuple[int], optional
@@ -812,7 +771,7 @@ class NormalizedGaussianAffinity(LogAffinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
         normalization_dim: int | Tuple[int] = (0, 1),
     ):
@@ -820,7 +779,7 @@ class NormalizedGaussianAffinity(LogAffinity):
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.sigma = sigma
@@ -840,7 +799,7 @@ class NormalizedGaussianAffinity(LogAffinity):
             of shape (n_samples, n_samples)
             Log of the normalized Gaussian affinity matrix.
         """
-        C = self._distance_matrix(X)
+        C, _ = self._distance_matrix(X)
 
         log_affinity_matrix = -C / self.sigma
 
@@ -879,8 +838,9 @@ class NormalizedStudentAffinity(LogAffinity):
         Whether to set the diagonal of the affinity matrix to zero.
     device : str, optional
         Device to use for computations.
-    keops : bool, optional
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity.
     normalization_dim : int or Tuple[int], optional
@@ -893,7 +853,7 @@ class NormalizedStudentAffinity(LogAffinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
         normalization_dim: int | Tuple[int] = (0, 1),
     ):
@@ -901,7 +861,7 @@ class NormalizedStudentAffinity(LogAffinity):
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.degrees_of_freedom = degrees_of_freedom
@@ -921,7 +881,7 @@ class NormalizedStudentAffinity(LogAffinity):
             of shape(n_samples, n_samples)
             Log of the normalized Student affinity matrix.
         """
-        C = self._distance_matrix(X)
+        C, _ = self._distance_matrix(X)
 
         log_affinity_matrix = (
             -0.5

@@ -1,22 +1,18 @@
-# -*- coding: utf-8 -*-
 """UMAP algorithm."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
 #
 # License: BSD 3-Clause License
 
+from torchdr.affinity import UMAPAffinityIn, UMAPAffinityOut
 from torchdr.neighbor_embedding.base import SampledNeighborEmbedding
-from torchdr.affinity import (
-    UMAPAffinityIn,
-    UMAPAffinityOut,
-)
-from torchdr.utils import sum_output, cross_entropy_loss
+from torchdr.utils import cross_entropy_loss, sum_output
 
 
 class UMAP(SampledNeighborEmbedding):
     r"""UMAP introduced in :cite:`mcinnes2018umap` and further studied in :cite:`damrich2021umap`.
 
-    It involves selecting a :class:`~torchdr.UMAPAffinityIn` as input
+    It uses a :class:`~torchdr.UMAPAffinityIn` as input
     affinity :math:`\mathbf{P}` and a :class:`~torchdr.UMAPAffinityOut` as output
     affinity :math:`\mathbf{Q}`.
 
@@ -24,9 +20,9 @@ class UMAP(SampledNeighborEmbedding):
 
     .. math::
 
-        -\sum_{ij} P_{ij} \log Q_{ij} + \sum_{i,j \in N(i)} \log (1 - Q_{ij})
+        -\sum_{ij} P_{ij} \log Q_{ij} + \sum_{i,j \in \mathrm{Neg}(i)} \log (1 - Q_{ij})
 
-    where :math:`N(i)` is the set of negatives samples for point :math:`i`.
+    where :math:`\mathrm{Neg}(i)` is the set of negatives samples for point :math:`i`.
 
     Parameters
     ----------
@@ -56,25 +52,22 @@ class UMAP(SampledNeighborEmbedding):
         Initialization for the embedding Z, default 'pca'.
     init_scaling : float, optional
         Scaling factor for the initialization, by default 1e-4.
-    tol : float, optional
+    min_grad_norm : float, optional
         Precision threshold at which the algorithm stops, by default 1e-7.
     max_iter : int, optional
         Number of maximum iterations for the descent algorithm. by default 2000.
-    tolog : bool, optional
-        Whether to store intermediate results in a dictionary, by default False.
     device : str, optional
         Device to use, by default "auto".
-    keops : bool, optional
-        Whether to use KeOps, by default False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity, by default False.
     random_state : float, optional
-        Random seed for reproducibility, by default 0.
-    early_exaggeration : float, optional
+        Random seed for reproducibility, by default None.
+    early_exaggeration_coeff : float, optional
         Coefficient for the attraction term during the early exaggeration phase.
         By default 1.0.
-    coeff_repulsion : float, optional
-        Coefficient for the repulsion term, by default 1.0.
     early_exaggeration_iter : int, optional
         Number of iterations for early exaggeration, by default 250.
     tol_affinity : float, optional
@@ -87,16 +80,8 @@ class UMAP(SampledNeighborEmbedding):
         Metric to use for the output affinity, by default 'euclidean'.
     n_negatives : int, optional
         Number of negative samples for the noise-contrastive loss, by default 10.
-
-    References
-    ----------
-    .. [M18] Leland McInnes, John Healy, James Melville (2018).
-        UMAP: Uniform manifold approximation and projection for dimension reduction.
-        arXiv preprint arXiv:1802.03426.
-
-    .. [D21] Sebastian Damrich, Fred Hamprecht (2021).
-        On UMAP's True Loss Function.
-        Advances in Neural Information Processing Systems 34 (NeurIPS).
+    sparsity : bool, optional
+        Whether to use sparsity mode for the input affinity. Default is True.
     """  # noqa: E501
 
     def __init__(
@@ -114,21 +99,20 @@ class UMAP(SampledNeighborEmbedding):
         scheduler_kwargs: dict = None,
         init: str = "pca",
         init_scaling: float = 1e-4,
-        tol: float = 1e-7,
+        min_grad_norm: float = 1e-7,
         max_iter: int = 2000,
-        tolog: bool = False,
         device: str = None,
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        random_state: float = 0,
-        early_exaggeration: float = 1.0,
-        coeff_repulsion: float = 1.0,
+        random_state: float = None,
+        early_exaggeration_coeff: float = 1.0,
         early_exaggeration_iter: int = 0,
         tol_affinity: float = 1e-3,
         max_iter_affinity: int = 100,
         metric_in: str = "sqeuclidean",
         metric_out: str = "sqeuclidean",
         n_negatives: int = 10,
+        sparsity: bool = True,
     ):
         self.n_neighbors = n_neighbors
         self.min_dist = min_dist
@@ -139,6 +123,7 @@ class UMAP(SampledNeighborEmbedding):
         self.metric_out = metric_out
         self.max_iter_affinity = max_iter_affinity
         self.tol_affinity = tol_affinity
+        self.sparsity = sparsity
 
         affinity_in = UMAPAffinityIn(
             n_neighbors=n_neighbors,
@@ -146,8 +131,9 @@ class UMAP(SampledNeighborEmbedding):
             tol=tol_affinity,
             max_iter=max_iter_affinity,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
+            sparsity=sparsity,
         )
         affinity_out = UMAPAffinityOut(
             min_dist=min_dist,
@@ -156,7 +142,7 @@ class UMAP(SampledNeighborEmbedding):
             b=b,
             metric=metric_out,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=False,
         )
 
@@ -166,20 +152,18 @@ class UMAP(SampledNeighborEmbedding):
             n_components=n_components,
             optimizer=optimizer,
             optimizer_kwargs=optimizer_kwargs,
-            tol=tol,
+            min_grad_norm=min_grad_norm,
             max_iter=max_iter,
             lr=lr,
             scheduler=scheduler,
             scheduler_kwargs=scheduler_kwargs,
             init=init,
             init_scaling=init_scaling,
-            tolog=tolog,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             random_state=random_state,
-            early_exaggeration=early_exaggeration,
-            coeff_repulsion=coeff_repulsion,
+            early_exaggeration_coeff=early_exaggeration_coeff,
             early_exaggeration_iter=early_exaggeration_iter,
             n_negatives=n_negatives,
         )

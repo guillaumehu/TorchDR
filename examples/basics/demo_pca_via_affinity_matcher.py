@@ -14,8 +14,8 @@ and using the AffinityMatcher class. Both approaches lead to the same solution.
 import matplotlib.pyplot as plt
 from sklearn.datasets import load_digits
 
-from torchdr.spectral import PCA
 from torchdr import AffinityMatcher, ScalarProductAffinity
+from torchdr.spectral import PCA
 
 # %%
 # Load toy images
@@ -62,7 +62,7 @@ model = AffinityMatcher(
     init="normal",
     lr=1e1,
     max_iter=50,
-    keops=False,
+    backend=None,
 )
 Z_am = model.fit_transform(X)
 

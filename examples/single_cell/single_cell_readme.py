@@ -1,11 +1,12 @@
-import requests
 import gzip
 import pickle
 from io import BytesIO
-from sklearn.preprocessing import LabelEncoder
-import matplotlib.pyplot as plt
 
-from torchdr import LargeVis, TSNE
+import matplotlib.pyplot as plt
+import requests
+from sklearn.preprocessing import LabelEncoder
+
+from torchdr import TSNE, LargeVis
 
 
 def download_and_load_dataset(url):
@@ -34,14 +35,14 @@ y_10x_encoded = LabelEncoder().fit_transform(y_10x)
 
 
 # --- Compute TSNE embeddings ---
-tsne = TSNE(keops=True, device="cuda", verbose=True)
+tsne = TSNE(backend="keops", device="cuda", verbose=True)
 z_tsne = tsne.fit_transform(x_macosko)
 
 # --- Compute LargeVis embeddings ---
 largevis = LargeVis(
     verbose=True,
     device="cuda",
-    keops=True,
+    backend="keops",
     max_iter=1000,
     n_negatives=50,
     optimizer="Adam",

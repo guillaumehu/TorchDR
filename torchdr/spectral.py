@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Spectral methods for dimensionality reduction."""
 
 # Authors: Hugues Van Assel <vanasselhugues@gmail.com>
@@ -7,25 +6,26 @@
 #
 # License: BSD 3-Clause License
 
-import torch
-import numpy as np
 from functools import partial
 from typing import Optional, Tuple
 
-from torchdr.base import DRModule
-from torchdr.utils import (
-    to_torch,
-    sum_red,
-    svd_flip,
-    handle_backend,
-    center_kernel,
-    check_nonnegativity_eigenvalues,
-)
+import numpy as np
+import torch
+
 from torchdr.affinity import (
     Affinity,
     GaussianAffinity,
     UnnormalizedAffinity,
     UnnormalizedLogAffinity,
+)
+from torchdr.base import DRModule
+from torchdr.utils import (
+    center_kernel,
+    check_nonnegativity_eigenvalues,
+    handle_type,
+    sum_red,
+    svd_flip,
+    to_torch,
 )
 
 
@@ -40,7 +40,7 @@ class PCA(DRModule):
         Device on which the computations are performed.
     verbose : bool, default=False
         Whether to print information during the computations.
-    random_state : float, default=0
+    random_state : float, default=None
         Random seed for reproducibility.
     svd_driver : str, optional
         Name of the cuSOLVER method to be used for torch.linalg.svd.
@@ -54,7 +54,7 @@ class PCA(DRModule):
         n_components: int = 2,
         device: str = "auto",
         verbose: bool = False,
-        random_state: float = 0,
+        random_state: float = None,
         svd_driver: Optional[str] = None,
     ):
         super().__init__(
@@ -88,7 +88,7 @@ class PCA(DRModule):
         self.embedding_ = U[:, : self.n_components] @ S[: self.n_components].diag()
         return self
 
-    @handle_backend
+    @handle_type
     def transform(self, X: torch.Tensor | np.ndarray):
         r"""Project the input data onto the PCA components.
 
@@ -132,11 +132,12 @@ class KernelPCA(DRModule):
         Number of components to project the input data onto.
     device : str, default="auto"
         Device on which the computations are performed.
-    keops : bool, default=False
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, default=False
         Whether to print information during the computations.
-    random_state : float, default=0
+    random_state : float, default=None
         Random seed for reproducibility.
     nodiag : bool, default=False
         Whether to remove eigenvectors with a zero eigenvalue.
@@ -147,26 +148,26 @@ class KernelPCA(DRModule):
         affinity: Affinity = GaussianAffinity(),
         n_components: int = 2,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        random_state: float = 0,
+        random_state: float = None,
         nodiag: bool = False,
     ):
         super().__init__(
             n_components=n_components,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             random_state=random_state,
         )
 
         self.affinity = affinity
-        self.affinity.keops = keops
+        self.affinity.backend = backend
         self.affinity.device = device
         self.affinity.random_state = random_state
         self.nodiag = nodiag
 
-        if keops:
+        if backend == "keops":
             raise NotImplementedError(
                 "[TorchDR] ERROR : KeOps is not (yet) supported for KernelPCA."
             )
@@ -212,7 +213,7 @@ class KernelPCA(DRModule):
         self.eigenvalues_ = eigvals
         return self
 
-    @handle_backend
+    @handle_type
     def transform(self, X: torch.Tensor | np.ndarray):
         r"""Project the input data onto the KernelPCA components.
 
@@ -319,7 +320,7 @@ class IncrementalPCA(DRModule):
         lowrank_niter: int = 4,
         device: str = "auto",
         verbose: bool = False,
-        random_state: float = 0,
+        random_state: float = None,
     ):
         super().__init__(
             n_components=n_components,
@@ -333,14 +334,14 @@ class IncrementalPCA(DRModule):
 
         if lowrank:
             if lowrank_q is None:
-                assert (
-                    n_components is not None
-                ), "n_components must be specified when using lowrank mode "
+                assert n_components is not None, (
+                    "n_components must be specified when using lowrank mode "
+                )
                 "with lowrank_q=None."
                 lowrank_q = n_components * 2
-            assert (
-                lowrank_q >= n_components
-            ), "lowrank_q must be greater than or equal to n_components."
+            assert lowrank_q >= n_components, (
+                "lowrank_q must be greater than or equal to n_components."
+            )
 
             def svd_fn(X):
                 U, S, V = torch.svd_lowrank(X, q=lowrank_q, niter=lowrank_niter)
@@ -389,12 +390,12 @@ class IncrementalPCA(DRModule):
             return last_mean, last_variance, last_sample_count
 
         if last_sample_count > 0:
-            assert (
-                last_mean is not None
-            ), "last_mean should not be None if last_sample_count > 0."
-            assert (
-                last_variance is not None
-            ), "last_variance should not be None if last_sample_count > 0."
+            assert last_mean is not None, (
+                "last_mean should not be None if last_sample_count > 0."
+            )
+            assert last_variance is not None, (
+                "last_variance should not be None if last_sample_count > 0."
+            )
 
         new_sample_count = torch.tensor([X.shape[0]], device=X.device)
         updated_sample_count = last_sample_count + new_sample_count
@@ -445,7 +446,7 @@ class IncrementalPCA(DRModule):
         IncrementalPCA:
             The fitted IPCA model.
         """
-        X = to_torch(X, device=self.device)
+        X = to_torch(X, device="auto")
         if check_input:
             X = self._validate_data(X)
         n_samples, n_features = X.shape
@@ -455,7 +456,8 @@ class IncrementalPCA(DRModule):
         for batch in self.gen_batches(
             n_samples, self.batch_size, min_batch_size=self.n_components or 0
         ):
-            self.partial_fit(X[batch], check_input=False)
+            X_batch = X[batch].to(X.device if self.device == "auto" else self.device)
+            self.partial_fit(X_batch, check_input=False)
 
         return self
 
@@ -534,7 +536,7 @@ class IncrementalPCA(DRModule):
             self.noise_variance_ = torch.tensor(0.0, device=X.device)
         return self
 
-    @handle_backend
+    @handle_type
     def transform(self, X: torch.Tensor | np.ndarray):
         """Apply dimensionality reduction to `X`.
 

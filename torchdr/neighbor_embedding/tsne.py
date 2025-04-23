@@ -1,22 +1,18 @@
-# -*- coding: utf-8 -*-
 """t-distributed Stochastic Neighbor embedding (TSNE) algorithm."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
 #
 # License: BSD 3-Clause License
 
+from torchdr.affinity import EntropicAffinity, StudentAffinity
 from torchdr.neighbor_embedding.base import SparseNeighborEmbedding
-from torchdr.affinity import (
-    EntropicAffinity,
-    StudentAffinity,
-)
 from torchdr.utils import logsumexp_red
 
 
 class TSNE(SparseNeighborEmbedding):
     r"""t-Stochastic Neighbor Embedding (t-SNE) introduced in :cite:`van2008visualizing`.
 
-    It involves selecting a :class:`~torchdr.EntropicAffinity` as input
+    It uses a :class:`~torchdr.EntropicAffinity` as input
     affinity :math:`\mathbf{P}` and a :class:`~torchdr.StudentAffinity` as output
     affinity :math:`\mathbf{Q}`.
 
@@ -48,25 +44,22 @@ class TSNE(SparseNeighborEmbedding):
         Initialization for the embedding Z, default 'pca'.
     init_scaling : float, optional
         Scaling factor for the initialization, by default 1e-4.
-    tol : float, optional
+    min_grad_norm : float, optional
         Precision threshold at which the algorithm stops, by default 1e-7.
     max_iter : int, optional
         Number of maximum iterations for the descent algorithm, by default 2000.
-    tolog : bool, optional
-        Whether to store intermediate results in a dictionary, by default False.
     device : str, optional
         Device to use, by default "auto".
-    keops : bool, optional
-        Whether to use KeOps, by default False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity, by default False.
     random_state : float, optional
-        Random seed for reproducibility, by default 0.
-    early_exaggeration : float, optional
+        Random seed for reproducibility, by default None.
+    early_exaggeration_coeff : float, optional
         Coefficient for the attraction term during the early exaggeration phase.
         By default 12.0 for early exaggeration.
-    coeff_repulsion : float, optional
-        Coefficient for the repulsion term, by default 1.0.
     early_exaggeration_iter : int, optional
         Number of iterations for early exaggeration, by default 250.
     tol_affinity : _type_, optional
@@ -90,20 +83,19 @@ class TSNE(SparseNeighborEmbedding):
         scheduler_kwargs: dict = None,
         init: str = "pca",
         init_scaling: float = 1e-4,
-        tol: float = 1e-7,
+        min_grad_norm: float = 1e-7,
         max_iter: int = 2000,
-        tolog: bool = False,
         device: str = None,
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        random_state: float = 0,
-        early_exaggeration: float = 12.0,
-        coeff_repulsion: float = 1.0,
+        random_state: float = None,
+        early_exaggeration_coeff: float = 12.0,
         early_exaggeration_iter: int = 250,
         tol_affinity: float = 1e-3,
         max_iter_affinity: int = 100,
         metric_in: str = "sqeuclidean",
         metric_out: str = "sqeuclidean",
+        sparsity: bool = True,
         **kwargs,
     ):
         self.metric_in = metric_in
@@ -111,6 +103,7 @@ class TSNE(SparseNeighborEmbedding):
         self.perplexity = perplexity
         self.max_iter_affinity = max_iter_affinity
         self.tol_affinity = tol_affinity
+        self.sparsity = sparsity
 
         affinity_in = EntropicAffinity(
             perplexity=perplexity,
@@ -118,13 +111,14 @@ class TSNE(SparseNeighborEmbedding):
             tol=tol_affinity,
             max_iter=max_iter_affinity,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
+            sparsity=sparsity,
         )
         affinity_out = StudentAffinity(
             metric=metric_out,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=False,
         )
 
@@ -134,20 +128,18 @@ class TSNE(SparseNeighborEmbedding):
             n_components=n_components,
             optimizer=optimizer,
             optimizer_kwargs=optimizer_kwargs,
-            tol=tol,
+            min_grad_norm=min_grad_norm,
             max_iter=max_iter,
             lr=lr,
             scheduler=scheduler,
             scheduler_kwargs=scheduler_kwargs,
             init=init,
             init_scaling=init_scaling,
-            tolog=tolog,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             random_state=random_state,
-            early_exaggeration=early_exaggeration,
-            coeff_repulsion=coeff_repulsion,
+            early_exaggeration_coeff=early_exaggeration_coeff,
             early_exaggeration_iter=early_exaggeration_iter,
         )
 

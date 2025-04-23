@@ -3,7 +3,7 @@ import os
 from matplotlib import pyplot as plt
 from sklearn.datasets import fetch_openml
 
-from torchdr import PCA, TSNE, UMAP, LargeVis, InfoTSNE
+from torchdr import PCA, TSNE, UMAP, InfoTSNE, LargeVis
 
 # --- Load the MNIST dataset ---
 mnist = fetch_openml("mnist_784", cache=True, as_frame=False)
@@ -15,19 +15,19 @@ y = mnist.target.astype("int64")
 x = PCA(50).fit_transform(x)
 
 # --- Compute TSNE embedding ---
-tsne = TSNE(keops=True, device="cuda", verbose=True)
+tsne = TSNE(backend="keops", device="cuda", verbose=True)
 z_tsne = tsne.fit_transform(x)
 
 # --- Compute InfoTSNE embedding ---
-infotsne = InfoTSNE(keops=True, device="cuda", verbose=True)
+infotsne = InfoTSNE(backend="keops", device="cuda", verbose=True)
 z_infotsne = infotsne.fit_transform(x)
 
 # --- Compute LargeVis embedding ---
-largevis = LargeVis(keops=True, device="cuda", verbose=True, max_iter=10000)
+largevis = LargeVis(backend="keops", device="cuda", verbose=True, max_iter=10000)
 z_largevis = largevis.fit_transform(x)
 
 # --- Compute UMAP embedding ---
-umap = UMAP(keops=True, device="cuda", verbose=True, max_iter=10000)
+umap = UMAP(backend="keops", device="cuda", verbose=True, max_iter=10000)
 z_umap = umap.fit_transform(x)
 
 
@@ -35,22 +35,22 @@ z_umap = umap.fit_transform(x)
 fig, axes = plt.subplots(1, 4, figsize=(24, 6))
 fontsize = 25
 
-scatter = axes[0].scatter(z_tsne[:, 0], z_tsne[:, 1], c=y, cmap="tab10", s=1, alpha=0.5)
+scatter = axes[0].scatter(z_tsne[:, 0], z_tsne[:, 1], c=y, cmap="tab10", s=1, alpha=0.3)
 axes[0].set_title("TSNE", fontsize=fontsize)
 axes[0].set_xticks([-10, 10])
 axes[0].set_yticks([-10, 10])
 
-axes[1].scatter(z_infotsne[:, 0], z_infotsne[:, 1], c=y, cmap="tab10", s=1, alpha=0.5)
+axes[1].scatter(z_infotsne[:, 0], z_infotsne[:, 1], c=y, cmap="tab10", s=1, alpha=0.3)
 axes[1].set_title("InfoTSNE", fontsize=fontsize)
 axes[1].set_xticks([-10, 10])
 axes[1].set_yticks([-10, 10])
 
-axes[2].scatter(z_largevis[:, 0], z_largevis[:, 1], c=y, cmap="tab10", s=1, alpha=0.5)
+axes[2].scatter(z_largevis[:, 0], z_largevis[:, 1], c=y, cmap="tab10", s=1, alpha=0.3)
 axes[2].set_title("LargeVis", fontsize=fontsize)
 axes[2].set_xticks([-5, 5])
 axes[2].set_yticks([-5, 5])
 
-axes[3].scatter(z_umap[:, 0], z_umap[:, 1], c=y, cmap="tab10", s=1, alpha=0.5)
+axes[3].scatter(z_umap[:, 0], z_umap[:, 1], c=y, cmap="tab10", s=1, alpha=0.3)
 axes[3].set_title("UMAP", fontsize=fontsize)
 axes[3].set_xticks([-5, 5])
 axes[3].set_yticks([-5, 5])

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Base classes for affinity matrices."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
@@ -7,17 +6,15 @@
 
 from abc import ABC
 
+import numpy as np
 import torch
 
-import numpy as np
 from torchdr.utils import (
-    symmetric_pairwise_distances,
-    symmetric_pairwise_distances_indices,
-    pairwise_distances,
-    to_torch,
     LazyTensorType,
-    pykeops,
     handle_keops,
+    pairwise_distances,
+    symmetric_pairwise_distances_indices,
+    to_torch,
 )
 
 
@@ -33,10 +30,11 @@ class Affinity(ABC):
     device : str, optional
         The device to use for computation. Typically "cuda" for GPU or "cpu" for CPU.
         If "auto", uses the device of the input data.
-    keops : bool, optional
-        Whether to use KeOps for efficient computation of large-scale kernel operations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
-        If True, prints additional information during computation. Default is False.
+        Verbosity. Default is False.
     """
 
     def __init__(
@@ -44,23 +42,16 @@ class Affinity(ABC):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
-        if keops and not pykeops:
-            raise ValueError(
-                "[TorchDR] ERROR : pykeops is not installed. Please install it to use "
-                "`keops=true`."
-            )
-
         self.log = {}
         self.metric = metric
         self.zero_diag = zero_diag
         self.device = device
-        self.keops = keops
+        self.backend = backend
         self.verbose = verbose
         self.zero_diag = zero_diag
-        self.add_diag = 1e12 if self.zero_diag else None
 
     def __call__(self, X: torch.Tensor | np.ndarray, **kwargs):
         r"""Compute the affinity matrix from the input data.
@@ -99,7 +90,7 @@ class Affinity(ABC):
         )
 
     @handle_keops
-    def _distance_matrix(self, X: torch.Tensor):
+    def _distance_matrix(self, X: torch.Tensor, k: int = None):
         r"""Compute the pairwise distance matrix from the input data.
 
         It uses the specified metric and optionally leveraging KeOps
@@ -109,19 +100,22 @@ class Affinity(ABC):
         ----------
         X : torch.Tensor of shape (n_samples, n_features)
             Input data.
+        k : int, optional
+            Number of nearest neighbors to compute the distance matrix. Default is None.
 
         Returns
         -------
         C : torch.Tensor or pykeops.torch.LazyTensor
             The pairwise distance matrix. The type of the returned matrix depends on the
-            value of the `keops` attribute. If `keops` is True, a KeOps LazyTensor
+            value of the `backend` attribute. If `backend` is `keops`, a KeOps LazyTensor
             is returned. Otherwise, a torch.Tensor is returned.
         """
-        return symmetric_pairwise_distances(
+        return pairwise_distances(
             X=X,
             metric=self.metric,
-            keops=self.keops_,
-            add_diag=self.add_diag,
+            backend=self.backend_,
+            exclude_self=self.zero_diag,
+            k=k,
         )
 
 
@@ -135,8 +129,9 @@ class LogAffinity(Affinity):
     device : str, optional
         The device to use for computation. Typically "cuda" for GPU or "cpu" for CPU.
         If "auto", uses the device of the input data.
-    keops : bool, optional
-        Whether to use KeOps for efficient computation of large-scale kernel operations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         If True, prints additional information during computation. Default is False.
     """
@@ -146,14 +141,14 @@ class LogAffinity(Affinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
 
@@ -219,9 +214,9 @@ class SparseLogAffinity(LogAffinity):
     device : str, optional
         The device to use for computation. Typically "cuda" for GPU or "cpu" for CPU.
         If "auto", uses the device of the input data. Default is "auto".
-    keops : bool, optional
-        Whether to use KeOps for efficient computation of large-scale kernel
-        operations. Default is False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         If True, prints additional information during computation. Default is False.
     sparsity : bool or 'auto', optional
@@ -233,38 +228,18 @@ class SparseLogAffinity(LogAffinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        sparsity: bool | str = "auto",
+        sparsity: bool = True,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.sparsity = sparsity
-        if sparsity == "auto":
-            self._sparsity = self._sparsity_rule()
-        else:
-            self._sparsity = sparsity
-
-    def _sparsity_rule(self):
-        r"""Rule to determine whether to compute the affinity matrix in a sparse format.
-
-        This method must be overridden by subclasses.
-
-        Raises
-        ------
-        NotImplementedError
-            If the `_sparsity_rule` method is not implemented by the subclass,
-            a NotImplementedError is raised.
-        """
-        raise NotImplementedError(
-            "[TorchDR] ERROR : `_sparsity_rule` method is not implemented. "
-            "Therefore sparsity = 'auto' is not supported."
-        )
 
     def __call__(
         self,
@@ -341,9 +316,9 @@ class UnnormalizedAffinity(Affinity):
     device : str, optional
         The device to use for computation, e.g., "cuda" for GPU or "cpu" for CPU.
         If "auto", it uses the device of the input data. Default is "auto".
-    keops : bool, optional
-        Whether to use KeOps for efficient computation of large-scale kernel
-        operations. Default is False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         If True, prints additional information during computation. Default is False.
     """
@@ -353,14 +328,14 @@ class UnnormalizedAffinity(Affinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
 
@@ -391,7 +366,7 @@ class UnnormalizedAffinity(Affinity):
         X = to_torch(X, device=self.device)
         if Y is not None:
             Y = to_torch(Y, device=self.device)
-        C = self._distance_matrix(X=X, Y=Y, indices=indices, **kwargs)
+        C, _ = self._distance_matrix(X=X, Y=Y, indices=indices, **kwargs)
         return self._affinity_formula(C)
 
     def _affinity_formula(self, C: torch.Tensor | LazyTensorType):
@@ -443,7 +418,7 @@ class UnnormalizedAffinity(Affinity):
         -------
         C : torch.Tensor or pykeops.torch.LazyTensor
             The pairwise distance matrix. The type of the returned matrix depends on the
-            value of the `keops` attribute. If `keops` is True, a KeOps LazyTensor
+            value of the `backend` attribute. If `backend` is `keops`, a KeOps LazyTensor
             is returned. Otherwise, a torch.Tensor is returned.
         """
         if Y is not None and indices is not None:
@@ -458,11 +433,14 @@ class UnnormalizedAffinity(Affinity):
             )
 
         elif Y is not None:
-            return pairwise_distances(X, Y, metric=self.metric, keops=self.keops_)
+            return pairwise_distances(X, Y, metric=self.metric, backend=self.backend_)
 
         else:
-            return symmetric_pairwise_distances(
-                X, metric=self.metric, keops=self.keops_, add_diag=self.add_diag
+            return pairwise_distances(
+                X,
+                metric=self.metric,
+                backend=self.backend_,
+                exclude_self=self.zero_diag,
             )
 
 
@@ -483,9 +461,9 @@ class UnnormalizedLogAffinity(UnnormalizedAffinity):
     device : str, optional
         The device to use for computation, e.g., "cuda" for GPU or "cpu" for CPU.
         If "auto", it uses the device of the input data. Default is "auto".
-    keops : bool, optional
-        Whether to use KeOps for efficient computation of large-scale kernel
-        operations. Default is False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         If True, prints additional information during computation. Default is False.
     """
@@ -495,14 +473,14 @@ class UnnormalizedLogAffinity(UnnormalizedAffinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
 
@@ -537,7 +515,7 @@ class UnnormalizedLogAffinity(UnnormalizedAffinity):
         X = to_torch(X, device=self.device)
         if Y is not None:
             Y = to_torch(Y, device=self.device)
-        C = self._distance_matrix(X=X, Y=Y, indices=indices, **kwargs)
+        C, _ = self._distance_matrix(X=X, Y=Y, indices=indices, **kwargs)
         log_affinity = self._log_affinity_formula(C)
         if log:
             return log_affinity

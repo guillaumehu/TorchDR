@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Base classes for DR methods."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
@@ -6,11 +5,12 @@
 # License: BSD 3-Clause License
 
 from abc import ABC, abstractmethod
-from sklearn.base import BaseEstimator
-import torch
-import numpy as np
 
-from torchdr.utils import pykeops
+import numpy as np
+import torch
+from sklearn.base import BaseEstimator
+
+from torchdr.utils import seed_everything
 
 
 class DRModule(BaseEstimator, ABC):
@@ -24,11 +24,12 @@ class DRModule(BaseEstimator, ABC):
         Number of components to project the input data onto.
     device : str, default="auto"
         Device on which the computations are performed.
-    keops : bool, default=False
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, default=False
         Whether to print information during the computations.
-    random_state : float, default=0
+    random_state : float, default=None
         Random seed for reproducibility.
     """
 
@@ -36,23 +37,20 @@ class DRModule(BaseEstimator, ABC):
         self,
         n_components: int = 2,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        random_state: float = 0,
+        random_state: float = None,
     ):
-        if keops and not pykeops:
-            raise ValueError(
-                "[TorchDR] ERROR : pykeops is not installed. Please install it to use "
-                "`keops=true`."
-            )
-
         self.n_components = n_components
         self.device = device
-        self.keops = keops
+        self.backend = backend
+
         self.random_state = random_state
+        seed_everything(self.random_state)
+
         self.verbose = verbose
         if self.verbose:
-            print(f"[TorchDR] Initializing DR model {self.__class__.__name__} ")
+            print(f"[TorchDR] Initializing DR model {self.__class__.__name__}. ")
 
     @abstractmethod
     def fit_transform(self, X: torch.Tensor | np.ndarray, y=None):

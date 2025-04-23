@@ -20,10 +20,10 @@ dependencies = [
 
 keywords = [
     "dimensionality reduction",
-    "machine learning", 
-    "data analysis", 
-    "pytorch", 
-    "scikit-learn", 
+    "machine learning",
+    "data analysis",
+    "pytorch",
+    "scikit-learn",
     "GPU"
 ]
 
@@ -71,6 +71,16 @@ keops = [
     "pykeops",
 ]
 
+dev = [
+    "pytest",
+    "coverage",
+    "numpydoc",
+    "pytest-cov",
+    "codecov",
+    "pykeops",
+    "pre-commit",
+]
+
 all =  [
     "pykeops",
 ]
@@ -78,11 +88,20 @@ all =  [
 doc = [
     "sphinx",
     "sphinx_gallery",
-    "sphinx_rtd_theme",
+    "pydata_sphinx_theme",
     "sphinxcontrib-bibtex",
     "matplotlib",
     "numpydoc",
     "memory_profiler",
     "myst-parser",
     "pandas",
+]
+
+examples = [
+    "matplotlib",
+    "seaborn",
+    "pandas",
+    "transformers",
+    "datasets",
+    "datamapplot",
 ]

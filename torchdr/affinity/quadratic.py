@@ -1,21 +1,16 @@
-# -*- coding: utf-8 -*-
 """Affinity matrices with quadratic constraints."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
 #
 # License: BSD 3-Clause License
 
-import torch
-from tqdm import tqdm
 import warnings
 
+import torch
+from tqdm import tqdm
+
 from torchdr.affinity import Affinity
-from torchdr.utils import (
-    OPTIMIZERS,
-    wrap_vectors,
-    check_NaNs,
-    batch_transpose,
-)
+from torchdr.utils import OPTIMIZERS, batch_transpose, check_NaNs, wrap_vectors
 
 
 @wrap_vectors
@@ -93,16 +88,15 @@ class DoublyStochasticQuadraticAffinity(Affinity):
         Learning rate for the optimizer.
     base_kernel : {"gaussian", "student"}, optional
         Which base kernel to normalize as doubly stochastic.
-    tolog : bool, optional
-        Whether to store intermediate result in a dictionary.
     metric : str, optional
-    Metric to use for computing distances (default "sqeuclidean").
+        Metric to use for computing distances (default "sqeuclidean").
     zero_diag : bool, optional
         Whether to set the diagonal elements of the affinity matrix to 0.
     device : str, optional
         Device to use for computation.
-    keops : bool, optional
-        Whether to use KeOps for computation.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity. Default is False.
     """  # noqa: E501
@@ -116,18 +110,17 @@ class DoublyStochasticQuadraticAffinity(Affinity):
         optimizer: str = "Adam",
         lr: float = 1e0,
         base_kernel: str = "gaussian",
-        tolog: bool = False,
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.eps = eps
@@ -137,7 +130,6 @@ class DoublyStochasticQuadraticAffinity(Affinity):
         self.optimizer = optimizer
         self.lr = lr
         self.base_kernel = base_kernel
-        self.tolog = tolog
 
     def _compute_affinity(self, X: torch.Tensor):
         r"""Compute the quadratic doubly stochastic affinity matrix from input data X.
@@ -158,7 +150,7 @@ class DoublyStochasticQuadraticAffinity(Affinity):
                 "Affinity matrix."
             )
 
-        C = self._distance_matrix(X)
+        C, _ = self._distance_matrix(X)
         if self.base_kernel == "student":
             C = (1 + C).log()
 
@@ -171,8 +163,6 @@ class DoublyStochasticQuadraticAffinity(Affinity):
             if self.init_dual is None
             else self.init_dual
         )
-        if self.tolog:
-            self.log["dual"] = [self.dual_.clone().detach().cpu()]
 
         optimizer = OPTIMIZERS[self.optimizer]([self.dual_], lr=self.lr)
 
@@ -193,9 +183,6 @@ class DoublyStochasticQuadraticAffinity(Affinity):
                     "consider decreasing the learning rate."
                 ),
             )
-
-            if self.tolog:
-                self.log["dual"].append(self.dual_.clone().detach().cpu())
 
             if self.verbose:
                 pbar.set_description(

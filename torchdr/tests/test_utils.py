@@ -1,30 +1,27 @@
-# -*- coding: utf-8 -*-
 """Tests for functions in utils module."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
 #
 # License: BSD 3-Clause License
 
-import torch
 import pytest
-
+import torch
 from torch.testing import assert_close
 
-
 from torchdr.utils import (
-    center_kernel,
-    pairwise_distances,
-    symmetric_pairwise_distances,
-    symmetric_pairwise_distances_indices,
+    LIST_METRICS_KEOPS,
+    LIST_METRICS_FAISS,
     binary_search,
-    false_position,
-    LIST_METRICS,
-    check_similarity_torch_keops,
-    check_symmetry,
+    center_kernel,
     check_shape,
     check_similarity,
-    pykeops,
+    check_similarity_torch_keops,
+    false_position,
     handle_keops,
+    pairwise_distances,
+    pykeops,
+    faiss,
+    symmetric_pairwise_distances_indices,
 )
 
 lst_types = [torch.double, torch.float]
@@ -89,86 +86,70 @@ def test_false_position(dtype):
 
 
 @pytest.mark.parametrize("dtype", lst_types)
-@pytest.mark.parametrize("metric", LIST_METRICS)
+@pytest.mark.parametrize("metric", LIST_METRICS_KEOPS)
 def test_pairwise_distances(dtype, metric):
     n, m, p = 100, 50, 10
     x = torch.randn(n, p, dtype=dtype)
     y = torch.randn(m, p, dtype=dtype)
 
     # --- check consistency between torch and keops ---
-    C = pairwise_distances(x, y, metric=metric, keops=False)
+    C, _ = pairwise_distances(x, y, metric=metric, backend=None)
     check_shape(C, (n, m))
 
 
 @pytest.mark.skipif(not pykeops, reason="pykeops is not available")
 @pytest.mark.parametrize("dtype", lst_types)
-@pytest.mark.parametrize("metric", LIST_METRICS)
+@pytest.mark.parametrize("metric", LIST_METRICS_KEOPS)
 def test_pairwise_distances_keops(dtype, metric):
     n, m, p = 100, 50, 10
     x = torch.randn(n, p, dtype=dtype)
     y = torch.randn(m, p, dtype=dtype)
 
     # --- check consistency between torch and keops ---
-    C = pairwise_distances(x, y, metric=metric, keops=False)
-    check_shape(C, (n, m))
-
-    C_keops = pairwise_distances(x, y, metric=metric, keops=True)
+    C, _ = pairwise_distances(x, y, metric=metric, backend=None)
+    C_keops, _ = pairwise_distances(x, y, metric=metric, backend="keops")
     check_shape(C_keops, (n, m))
 
     check_similarity_torch_keops(C, C_keops, K=10)
 
+    # --- check consistency between torch and keops with kNN search ---
+    k = 10
+    C, _ = pairwise_distances(x, y, k=k, metric=metric, backend=None)
+    C_keops, _ = pairwise_distances(x, y, k=k, metric=metric, backend="keops")
+    check_shape(C_keops, (n, k))
 
+    torch.testing.assert_close(C, C_keops, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(not faiss, reason="faiss is not available")
 @pytest.mark.parametrize("dtype", lst_types)
-@pytest.mark.parametrize("metric", LIST_METRICS)
-def test_symmetric_pairwise_distances(dtype, metric):
-    n, p = 100, 10
+@pytest.mark.parametrize("metric", LIST_METRICS_FAISS)
+def test_pairwise_distances_faiss(dtype, metric):
+    n, m, p = 100, 50, 10
     x = torch.randn(n, p, dtype=dtype)
+    y = torch.randn(m, p, dtype=dtype)
 
-    # --- check consistency between torch and keops ---
-    C = symmetric_pairwise_distances(x, metric=metric, keops=False)
-    check_shape(C, (n, n))
-    check_symmetry(C)
+    # --- check consistency between torch and faiss ---
+    k = 10
+    C, _ = pairwise_distances(x, y, k=k, metric=metric, backend=None)
+    C_faiss, _ = pairwise_distances(x, y, k=k, metric=metric, backend="faiss")
+    check_shape(C_faiss, (n, k))
 
-    # --- check consistency with pairwise_distances ---
-    C_ = pairwise_distances(x, metric=metric, keops=False)
-    check_similarity(C, C_)
-
-
-@pytest.mark.skipif(not pykeops, reason="pykeops is not available")
-@pytest.mark.parametrize("dtype", lst_types)
-@pytest.mark.parametrize("metric", LIST_METRICS)
-def test_symmetric_pairwise_distances_keops(dtype, metric):
-    n, p = 100, 10
-    x = torch.randn(n, p, dtype=dtype)
-
-    # --- check consistency between torch and keops ---
-    C = symmetric_pairwise_distances(x, metric=metric, keops=False)
-    check_shape(C, (n, n))
-    check_symmetry(C)
-
-    C_keops = symmetric_pairwise_distances(x, metric=metric, keops=True)
-    check_shape(C_keops, (n, n))
-    check_symmetry(C_keops)
-
-    check_similarity_torch_keops(C, C_keops, K=10)
-
-    # --- check consistency with pairwise_distances ---
-    C_ = pairwise_distances(x, metric=metric, keops=False)
-    check_similarity(C, C_)
+    torch.testing.assert_close(C, C_faiss, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("dtype", lst_types)
-@pytest.mark.parametrize("metric", LIST_METRICS)
+@pytest.mark.parametrize("metric", LIST_METRICS_KEOPS)
 def test_symmetric_pairwise_distances_indices(dtype, metric):
     n, p = 100, 10
     x = torch.randn(n, p, dtype=dtype)
     indices = torch.randint(0, n, (n, 10))
 
     # --- check consistency with symmetric_pairwise_distances ---
-    C_indices = symmetric_pairwise_distances_indices(x, indices, metric=metric)
+    C_indices, _ = symmetric_pairwise_distances_indices(x, indices, metric=metric)
     check_shape(C_indices, (n, 10))
 
-    C_full = symmetric_pairwise_distances(x, metric=metric, keops=False)
+    C_full, _ = pairwise_distances(x, metric=metric, backend=None)
     C_full_indices = C_full.gather(1, indices)
 
     check_similarity(C_indices, C_full_indices)
@@ -193,8 +174,8 @@ def test_center_kernel(dtype):
 
 
 class MockClass:
-    def __init__(self, keops=False):
-        self.keops = keops
+    def __init__(self, backend=None):
+        self.backend = backend
 
     @handle_keops
     def some_method(self, *args, **kwargs):
@@ -209,17 +190,17 @@ def mock_obj():
 def test_no_indices_keops_false(mock_obj):
     result = mock_obj.some_method()
     assert result == "Function executed"
-    assert getattr(mock_obj, "keops_") is False  # Ensure keops_ remains False
+    assert getattr(mock_obj, "backend_") is None  # Ensure backend_ remains None
 
 
-def test_no_indices_keops_true(mock_obj):
-    mock_obj.keops = True
+def test_no_indices_keops(mock_obj):
+    mock_obj.backend = "keops"
     result = mock_obj.some_method()
     assert result == "Function executed"
-    assert getattr(mock_obj, "keops_") is True  # Ensure keops_ remains True
+    assert getattr(mock_obj, "backend_") == "keops"  # Ensure backend_ remains "keops"
 
 
 def test_indices_provided(mock_obj):
     result = mock_obj.some_method(indices=[1, 2, 3])
     assert result == "Function executed"
-    assert getattr(mock_obj, "keops_", None) is None  # Ensure keops_ isn't set
+    assert getattr(mock_obj, "backend_", None) is None  # Ensure backend_ isn't set

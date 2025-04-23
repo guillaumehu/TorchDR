@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Tests estimators for scikit-learn compatibility.
 """
@@ -9,18 +8,11 @@ Tests estimators for scikit-learn compatibility.
 # License: BSD 3-Clause License
 
 import pytest
-
-from torchdr.neighbor_embedding import SNE, TSNE, InfoTSNE, TSNEkhorn, LargeVis
-from torchdr.utils import pykeops
 from sklearn.utils.estimator_checks import check_estimator
 
+from torchdr.neighbor_embedding import SNE, TSNE, InfoTSNE, LargeVis, TSNEkhorn
+
 DEVICE = "cpu"
-
-
-@pytest.mark.skipif(pykeops, reason="pykeops is available")
-def test_keops_not_installed():
-    with pytest.raises(ValueError, match="pykeops is not installed"):
-        SNE(keops=True)
 
 
 @pytest.mark.parametrize(
@@ -35,14 +27,8 @@ def test_keops_not_installed():
 )
 def test_check_estimator(estimator, kwargs):
     check_estimator(
-        estimator(verbose=False, device=DEVICE, keops=False, max_iter=1, **kwargs)
+        estimator(verbose=False, device=DEVICE, backend=None, max_iter=1, **kwargs)
     )
-
-
-@pytest.mark.skipif(pykeops, reason="pykeops is available")
-def test_init_keops_error(monkeypatch):
-    with pytest.raises(ValueError, match="pykeops is not installed"):
-        TSNE(keops=True)
 
 
 def test_init_verbose(capfd):

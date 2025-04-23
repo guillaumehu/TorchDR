@@ -2,14 +2,14 @@
 #
 # License: BSD 3-Clause License
 
+import numpy as np
 import pytest
 import torch
-import numpy as np
 from sklearn.decomposition import KernelPCA as skKernelPCA
 
-from torchdr.utils import pykeops
-from torchdr.spectral import KernelPCA
 from torchdr.affinity import GaussianAffinity, SinkhornAffinity
+from torchdr.spectral import KernelPCA
+from torchdr.utils import pykeops
 
 
 @pytest.mark.parametrize("n_components", [3, None])
@@ -65,4 +65,4 @@ def test_KernelPCA_no_transform():
 @pytest.mark.skipif(not pykeops, reason="pykeops is not available")
 def test_KernelPCA_keops():
     with pytest.raises(NotImplementedError):
-        KernelPCA(keops=True)
+        KernelPCA(backend="keops")

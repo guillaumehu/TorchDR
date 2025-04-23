@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Affinity matcher base classes."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
@@ -6,27 +5,29 @@
 #
 # License: BSD 3-Clause License
 
-import torch
-import numpy as np
-from tqdm import tqdm
 import warnings
 
-from torchdr.utils import (
-    OPTIMIZERS,
-    check_nonnegativity,
-    check_NaNs,
-    handle_backend,
-    to_torch,
-)
+import numpy as np
+import torch
+from tqdm import tqdm
+
 from torchdr.affinity import (
     Affinity,
     LogAffinity,
     SparseLogAffinity,
     UnnormalizedAffinity,
 )
-from torchdr.spectral import PCA
 from torchdr.base import DRModule
-from torchdr.utils import square_loss, cross_entropy_loss
+from torchdr.spectral import PCA
+from torchdr.utils import (
+    OPTIMIZERS,
+    check_NaNs,
+    check_nonnegativity,
+    cross_entropy_loss,
+    handle_type,
+    square_loss,
+    to_torch,
+)
 
 LOSS_DICT = {
     "square_loss": square_loss,
@@ -41,10 +42,10 @@ class AffinityMatcher(DRModule):
 
     .. math::
 
-        \min_{\mathbf{Z}} \: \mathcal{L}( \mathbf{A_X}, \mathbf{A_Z})
+        \min_{\mathbf{Z}} \: \mathcal{L}( \mathbf{P}, \mathbf{Q})
 
-    where :math:`\mathcal{L}` is a loss function, :math:`\mathbf{A_X}` is the
-    input affinity matrix and :math:`\mathbf{A_Z}` is the affinity matrix of the
+    where :math:`\mathcal{L}` is a loss function, :math:`\mathbf{P}` is the
+    input affinity matrix and :math:`\mathbf{Q}` is the affinity matrix of the
     embedding.
 
     The embedding optimization is performed using a first-order optimization method, with gradients calculated via PyTorch's automatic differentiation.
@@ -69,7 +70,7 @@ class AffinityMatcher(DRModule):
         Learning rate scheduler. Default is "constant".
     scheduler_kwargs : dict, optional
         Additional keyword arguments for the scheduler.
-    tol : float, optional
+    min_grad_norm : float, optional
         Tolerance for stopping criterion. Default is 1e-7.
     max_iter : int, optional
         Maximum number of iterations. Default is 1000.
@@ -77,16 +78,17 @@ class AffinityMatcher(DRModule):
         Initialization method for the embedding. Default is "pca".
     init_scaling : float, optional
         Scaling factor for the initial embedding. Default is 1e-4.
-    tolog : bool, optional
-        If True, logs the optimization process. Default is False.
     device : str, optional
         Device to use for computations. Default is "auto".
-    keops : bool, optional
-        Whether to use KeOps for computations. Default is False.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity of the optimization process. Default is False.
     random_state : float, optional
-        Random seed for reproducibility. Default is 0.
+        Random seed for reproducibility. Default is None.
+    n_iter_check : int, optional
+        Number of iterations between two checks for convergence. Default is 50.
     """  # noqa: E501
 
     def __init__(
@@ -102,20 +104,20 @@ class AffinityMatcher(DRModule):
         lr: float | str = 1e0,
         scheduler: str = "constant",
         scheduler_kwargs: dict = None,
-        tol: float = 1e-7,
+        min_grad_norm: float = 1e-7,
         max_iter: int = 1000,
         init: str | torch.Tensor | np.ndarray = "pca",
         init_scaling: float = 1e-4,
-        tolog: bool = False,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
-        random_state: float = 0,
+        random_state: float = None,
+        n_iter_check: int = 50,
     ):
         super().__init__(
             n_components=n_components,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             random_state=random_state,
         )
@@ -126,7 +128,9 @@ class AffinityMatcher(DRModule):
         self.optimizer = optimizer
         self.optimizer_kwargs = optimizer_kwargs
         self.lr = lr
-        self.tol = tol
+        self.min_grad_norm = min_grad_norm
+        self.n_iter_check = n_iter_check
+        self.verbose = verbose
         self.max_iter = max_iter
         self.scheduler = scheduler
         self.scheduler_kwargs = scheduler_kwargs
@@ -140,9 +144,6 @@ class AffinityMatcher(DRModule):
 
         self.init = init
         self.init_scaling = init_scaling
-
-        self.tolog = tolog
-        self.verbose = verbose
 
         # --- check affinity_out ---
         if not isinstance(affinity_out, Affinity):
@@ -167,7 +168,7 @@ class AffinityMatcher(DRModule):
             affinity_in._sparsity = False  # turn off sparsity
         self.affinity_in = affinity_in
 
-    @handle_backend
+    @handle_type
     def fit_transform(self, X: torch.Tensor | np.ndarray, y=None):
         """Fit the model to the provided data and returns the transformed data.
 
@@ -183,7 +184,7 @@ class AffinityMatcher(DRModule):
         -------
         embedding_ : torch.Tensor
             The embedding of the input data.
-        """
+        """  # noqa: RST306
         self._fit(X)
         return self.embedding_
 
@@ -207,8 +208,6 @@ class AffinityMatcher(DRModule):
         return self
 
     def _fit(self, X: torch.Tensor):
-        self._instantiate_generator()
-
         self.n_samples_in_, self.n_features_in_ = X.shape
 
         # --- check if affinity_in is precomputed else compute it ---
@@ -239,14 +238,16 @@ class AffinityMatcher(DRModule):
             loss = self._loss()
             loss.backward()
 
-            grad_norm = self.embedding_.grad.norm(2).item()
-            if grad_norm < self.tol:
-                if self.verbose:
-                    print(
-                        f"[TorchDR] Convergence reached at iter {k} with grad norm: "
-                        f"{grad_norm:.2e}."
-                    )
-                break
+            check_convergence = k % self.n_iter_check == 0
+            if check_convergence:
+                grad_norm = self.embedding_.grad.norm(2).item()
+                if grad_norm < self.min_grad_norm:
+                    if self.verbose:
+                        print(
+                            f"[TorchDR] Convergence reached at iter {k} with grad norm: "
+                            f"{grad_norm:.2e}."
+                        )
+                    break
 
             self.optimizer_.step()
             self.scheduler_.step()
@@ -324,7 +325,10 @@ class AffinityMatcher(DRModule):
             )
 
         elif self.scheduler == "linear":
-            linear_decay = lambda epoch: (1 - epoch / n_iter)
+
+            def linear_decay(epoch):
+                return 1 - epoch / n_iter
+
             self.scheduler_ = torch.optim.lr_scheduler.LambdaLR(
                 self.optimizer_, lr_lambda=linear_decay
             )
@@ -341,12 +345,6 @@ class AffinityMatcher(DRModule):
 
         return self.scheduler_
 
-    def _instantiate_generator(self):
-        self.generator_ = np.random.default_rng(
-            seed=self.random_state
-        )  # we use numpy because torch.Generator is not picklable
-        return self.generator_
-
     def _init_embedding(self, X):
         n = X.shape[0]
 
@@ -354,8 +352,8 @@ class AffinityMatcher(DRModule):
             embedding_ = to_torch(self.init, device=self.device)
 
         elif self.init == "normal" or self.init == "random":
-            embedding_ = torch.tensor(
-                self.generator_.standard_normal(size=(n, self.n_components)),
+            embedding_ = torch.randn(
+                (n, self.n_components),
                 device=X.device if self.device == "auto" else self.device,
                 dtype=X.dtype,
             )

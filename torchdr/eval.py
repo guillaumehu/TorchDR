@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Evaluation methods for dimensionality reduction."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
@@ -6,13 +5,13 @@
 #
 # License: BSD 3-Clause License
 
-import torch
-import numpy as np
 import warnings
 from random import sample, seed
 
-from torchdr.utils import to_torch, pairwise_distances, prod_matrix_vector
+import numpy as np
+import torch
 
+from torchdr.utils import pairwise_distances, prod_matrix_vector, to_torch
 
 admissible_LIST_METRICS = ["euclidean", "manhattan", "hyperbolic", "precomputed"]
 
@@ -23,7 +22,7 @@ def silhouette_samples(
     weights: torch.Tensor | np.ndarray = None,
     metric: str = "euclidean",
     device: str = None,
-    keops: bool = True,
+    backend: str = None,
     warn: bool = True,
 ):
     r"""Compute the silhouette coefficients for each data sample.
@@ -53,8 +52,9 @@ def silhouette_samples(
         The default is 'euclidean'.
     device : str, optional
         Device to use for computations.
-    keops : bool, optional
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     warn : bool, optional
         Whether to output warnings when edge cases are identified.
 
@@ -69,9 +69,10 @@ def silhouette_samples(
     if metric == "precomputed":
         if X.shape[0] != X.shape[1]:
             raise ValueError("X must be a square matrix with metric = 'precomputed'")
-        if keops and warn:
+        if backend == "keops" and warn:
             warnings.warn(
-                "[TorchDR] WARNING : keops not supported with metric = 'precomputed'",
+                "[TorchDR] WARNING : backend 'keops' not supported "
+                "with metric = 'precomputed'.",
                 stacklevel=2,
             )
 
@@ -94,8 +95,8 @@ def silhouette_samples(
             if metric == "precomputed":
                 intra_cluster_dists = X[pos_i, :][:, pos_i]
             else:
-                intra_cluster_dists = pairwise_distances(
-                    X[pos_i], X[pos_i], metric, keops
+                intra_cluster_dists, _ = pairwise_distances(
+                    X[pos_i], X[pos_i], metric, backend
                 )
 
             if weights is None:
@@ -133,8 +134,8 @@ def silhouette_samples(
             if metric == "precomputed":
                 inter_cluster_dists = X[pos_i, :][:, pos_j]
             else:
-                inter_cluster_dists = pairwise_distances(
-                    X[pos_i], X[pos_j], metric, keops
+                inter_cluster_dists, _ = pairwise_distances(
+                    X[pos_i], X[pos_j], metric, backend
                 )
 
             if weights is None:
@@ -167,7 +168,7 @@ def silhouette_score(
     weights: torch.Tensor | np.ndarray = None,
     metric: str = "euclidean",
     device: str = None,
-    keops: bool = True,
+    backend: str = None,
     sample_size: int = None,
     random_state: int = None,
     warn: bool = True,
@@ -199,8 +200,9 @@ def silhouette_score(
         The default is 'euclidean'.
     device : str, optional
         Device to use for computations.
-    keops : bool, optional
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     sample_size : int, optional
         Number of samples to use when computing the score on a random subset.
         If sample_size is None, no sampling is used.
@@ -217,7 +219,7 @@ def silhouette_score(
     """
     if sample_size is None:
         coefficients = silhouette_samples(
-            X, labels, weights, metric, device, keops, warn
+            X, labels, weights, metric, device, backend, warn
         )
     else:
         seed(random_state)
@@ -235,7 +237,7 @@ def silhouette_score(
             sub_X = X[indices]
 
         coefficients = silhouette_samples(
-            sub_X, labels[indices], sub_weights, metric, device, keops, warn
+            sub_X, labels[indices], sub_weights, metric, device, backend, warn
         )
 
     silhouette_score = coefficients.mean()

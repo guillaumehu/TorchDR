@@ -1,23 +1,20 @@
-# -*- coding: utf-8 -*-
 """Affinity matrices used in UMAP."""
 
 # Author: Hugues Van Assel <vanasselhugues@gmail.com>
 #
 # License: BSD 3-Clause License
 
-import torch
-from ..utils import LazyTensorType
 import math
-import numpy as np
-from scipy.optimize import curve_fit
 import warnings
 
-from torchdr.affinity.base import UnnormalizedAffinity, SparseLogAffinity
-from torchdr.utils import (
-    false_position,
-    kmin,
-    wrap_vectors,
-)
+import numpy as np
+import torch
+from scipy.optimize import curve_fit
+
+from torchdr.affinity.base import SparseLogAffinity, UnnormalizedLogAffinity
+from torchdr.utils import false_position, kmin, wrap_vectors
+
+from ..utils import LazyTensorType
 
 
 @wrap_vectors
@@ -59,7 +56,7 @@ def _check_n_neighbors(n_neighbors, n, verbose=True):
         if verbose:
             warnings.warn(
                 "[TorchDR] WARNING : The n_neighbors parameter must be greater than "
-                f"1 and smaller than the number of samples - 1 (here {n-1}). "
+                f"1 and smaller than the number of samples - 1 (here {n - 1}). "
                 f"Got n_neighbors = {n_neighbors}. Setting n_neighbors to {new_value}."
             )
         return new_value
@@ -86,16 +83,18 @@ class UMAPAffinityIn(SparseLogAffinity):
         Precision threshold for the root search.
     max_iter : int, optional
         Maximum number of iterations for the root search.
-    sparsity : bool or 'auto', optional
+    sparsity : bool, optional
         Whether to use sparsity mode.
+        Default is True.
     metric : str, optional
         Metric to use for pairwise distances computation.
     zero_diag : bool, optional
         Whether to set the diagonal of the affinity matrix to zero.
     device : str, optional
         Device to use for computations.
-    keops : bool, optional
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity. Default is False.
     """  # noqa: E501
@@ -105,11 +104,11 @@ class UMAPAffinityIn(SparseLogAffinity):
         n_neighbors: float = 30,  # analog of the perplexity parameter of SNE / TSNE
         tol: float = 1e-5,
         max_iter: int = 1000,
-        sparsity: bool | str = "auto",
+        sparsity: bool = True,
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         self.n_neighbors = n_neighbors
@@ -120,22 +119,10 @@ class UMAPAffinityIn(SparseLogAffinity):
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
             sparsity=sparsity,
         )
-
-    def _sparsity_rule(self):
-        if self.n_neighbors < 100:
-            return True
-        else:
-            if self.verbose:
-                warnings.warn(
-                    "[TorchDR] WARNING Affinity: n_neighbors is large "
-                    f"({self.n_neighbors}) thus we turn off sparsity for "
-                    "the UMAPAffinityIn. "
-                )
-            return False
 
     def _compute_sparse_log_affinity(self, X: torch.Tensor | np.ndarray):
         r"""Compute the input affinity matrix of UMAP from input data X.
@@ -153,22 +140,22 @@ class UMAPAffinityIn(SparseLogAffinity):
         if self.verbose:
             print("[TorchDR] Affinity : computing the input affinity matrix of UMAP.")
 
-        C = self._distance_matrix(X)
-
-        n_samples_in = C.shape[0]
+        n_samples_in = X.shape[0]
         n_neighbors = _check_n_neighbors(self.n_neighbors, n_samples_in, self.verbose)
 
-        if self._sparsity:
+        if self.sparsity:
             if self.verbose:
                 print(
                     "[TorchDR] Affinity : sparsity mode enabled, computing "
-                    "nearest neighbors."
+                    f"{n_neighbors} nearest neighbors. If this step is too slow, "
+                    "consider reducing the dimensionality of the data using PCA "
+                    "or disabling sparsity."
                 )
             # when using sparsity, we construct a reduced distance matrix
             # of shape (n_samples, n_neighbors)
-            C_, indices = kmin(C, k=n_neighbors, dim=1)
+            C_, indices = self._distance_matrix(X, k=n_neighbors)
         else:
-            C_, indices = C, None
+            C_, indices = self._distance_matrix(X)
 
         self.rho_ = kmin(C_, k=1, dim=1)[0].squeeze().contiguous()
 
@@ -191,7 +178,7 @@ class UMAPAffinityIn(SparseLogAffinity):
         return log_affinity_matrix, indices
 
 
-class UMAPAffinityOut(UnnormalizedAffinity):
+class UMAPAffinityOut(UnnormalizedLogAffinity):
     r"""Compute the affinity used in embedding space in UMAP :cite:`mcinnes2018umap`.
 
     Its :math:`(i,j)` coefficient is as follows:
@@ -220,8 +207,9 @@ class UMAPAffinityOut(UnnormalizedAffinity):
         Whether to set the diagonal of the affinity matrix to zero.
     device : str, optional
         Device to use for computations.
-    keops : bool, optional
-        Whether to use KeOps for computations.
+    backend : {"keops", "faiss", None}, optional
+        Which backend to use for handling sparsity and memory efficiency.
+        Default is None.
     verbose : bool, optional
         Verbosity. Default is False.
     """
@@ -235,14 +223,14 @@ class UMAPAffinityOut(UnnormalizedAffinity):
         metric: str = "sqeuclidean",
         zero_diag: bool = True,
         device: str = "auto",
-        keops: bool = False,
+        backend: str = None,
         verbose: bool = False,
     ):
         super().__init__(
             metric=metric,
             zero_diag=zero_diag,
             device=device,
-            keops=keops,
+            backend=backend,
             verbose=verbose,
         )
         self.min_dist = min_dist
@@ -255,5 +243,5 @@ class UMAPAffinityOut(UnnormalizedAffinity):
             self._a = a
             self._b = b
 
-    def _affinity_formula(self, C: torch.Tensor | LazyTensorType):
-        return 1 / (1 + self._a * C**self._b)
+    def _log_affinity_formula(self, C: torch.Tensor | LazyTensorType):
+        return -(1 + self._a * C**self._b).log()

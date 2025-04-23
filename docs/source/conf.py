@@ -10,10 +10,17 @@ sys.path.insert(0, os.path.abspath("../.."))
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath("../torchdr"))
+
+from torchdr.__about__ import __version__  # Import the version from __about__.py
+
 project = "TorchDR"
 copyright = "2024, TorchDR team"
 author = "Hugues Van Assel"
-release = "0.0.0-alpha"
+release = __version__
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -27,6 +34,7 @@ extensions = [
     "sphinx.ext.doctest",
     "sphinx_gallery.gen_gallery",
     "sphinxcontrib.bibtex",
+    "myst_parser",
 ]
 
 autosummary_generate = True
@@ -81,28 +89,39 @@ bibtex_default_style = "alpha"
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "pydata_sphinx_theme"
 html_static_path = []
 html_favicon = "figures/logo.ico"
 html_logo = "figures/torchdr_logo.png"
 html_theme_options = {
     # "analytics_id": "",  # Provided by Google in your dashboard G-
+    "header_links_before_dropdown": 5,
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/TorchDR/TorchDR",
+            "icon": "fa-brands fa-github",
+            "type": "fontawesome",
+        },
+        {
+            "name": "PyPI",
+            "url": "https://pypi.org/project/torchdr/",
+            "icon": "fa-custom fa-pypi",
+            "type": "fontawesome",
+        },
+    ],
     "analytics_anonymize_ip": False,
-    "logo_only": True,
-    "display_version": True,
-    "prev_next_buttons_location": "bottom",
-    "style_external_links": False,
-    "vcs_pageview_mode": "",
-    "style_nav_header_background": "white",
     # Toc options
     "collapse_navigation": True,
-    "sticky_navigation": True,
     "navigation_depth": 4,
-    "includehidden": True,
-    "titles_only": False,
 }
 
-# Separator substition : Writing |sep| in the rst file will display a horizontal line.
+html_static_path = ["js"]
+html_js_files = [
+    "pypi-icon.js",
+]
+
+# Separator substitution : Writing |sep| in the rst file will display a horizontal line.
 rst_prolog = """
 .. |sep| raw:: html
 
